@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Repo, AppItem, DeviceProfile, DEFAULT_REPO, DEFAULT_APP, DEFAULT_DEVICE, SAMPLE_REPOS, validateURL, processRepoForExport } from './types';
+import { Repo, AppItem, DeviceProfile, DEFAULT_REPO, DEFAULT_APP, DEFAULT_DEVICE, validateURL, processRepoForExport } from './types';
 import { InputGroup } from './components/InputGroup';
 import { AppEditor } from './components/AppEditor';
 import { DeviceMockup } from './components/DeviceMockup';
@@ -8,6 +8,7 @@ import { PublishManager } from './components/PublishManager';
 import { AIImporter } from './components/AIImporter';
 import { ImportModal } from './components/ImportModal';
 import { DeviceManager } from './components/DeviceManager';
+import { Toast, ToastMessage, ToastType } from './components/Toast';
 import { 
     Download, 
     Upload, 
@@ -21,15 +22,13 @@ import {
     Sparkles,
     Bot,
     X,
-    BookOpen,
-    ChevronDown,
     Layers,
-    RotateCcw,
     FileDown,
     Filter,
     ShieldAlert,
     History,
-    Settings
+    Settings,
+    Search
 } from 'lucide-react';
 
 const generateId = () => Math.random().toString(36).substring(2, 9) + Date.now().toString(36);
@@ -69,7 +68,6 @@ const App: React.FC = () => {
 
     const [editingAppIndex, setEditingAppIndex] = useState<number | null>(null);
     const [activeTab, setActiveTab] = useState<'details' | 'apps'>('details');
-    const [copied, setCopied] = useState(false);
     
     // UI State
     const [viewMode, setViewMode] = useState<'editor' | 'preview' | 'json'>('editor');
@@ -77,8 +75,9 @@ const App: React.FC = () => {
     const [showAIImporter, setShowAIImporter] = useState(false);
     const [showImportModal, setShowImportModal] = useState(false);
     const [showMobileAssistant, setShowMobileAssistant] = useState(false);
-    const [showTemplates, setShowTemplates] = useState(false);
     const [showDeviceManager, setShowDeviceManager] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
     // Export Options (Local)
     const [exportConfig, setExportConfig] = useState({
@@ -91,23 +90,20 @@ const App: React.FC = () => {
         localStorage.setItem('trollapps-device-profile', JSON.stringify(device));
     }, [repo, device]);
 
+    const addToast = (text: string, type: ToastType = 'info') => {
+        const id = Math.random().toString(36).substring(2, 9);
+        setToasts(prev => [...prev, { id, text, type }]);
+    };
+
+    const removeToast = (id: string) => {
+        setToasts(prev => prev.filter(t => t.id !== id));
+    };
+
     const handleImportRepo = (newRepo: Repo) => {
         setRepo(newRepo);
         setEditingAppIndex(null);
         setActiveTab('apps');
-    };
-
-    const loadTemplate = (key: string) => {
-        const template = SAMPLE_REPOS[key];
-        if (template) {
-            if (!window.confirm(`Load "${key}" template? This will replace your current work.`)) return;
-            const newApps = template.apps.map(app => ({...app, id: generateId()}));
-            const newRepo = { ...template, apps: newApps };
-            setRepo(newRepo);
-            setShowTemplates(false);
-            setEditingAppIndex(null);
-            setActiveTab('apps');
-        }
+        addToast(`Imported "${newRepo.name}" with ${newRepo.apps.length} apps`, 'success');
     };
 
     const handleRepoChange = (field: keyof Repo, value: any) => {
@@ -123,6 +119,7 @@ const App: React.FC = () => {
         setRepo(prev => ({ ...prev, apps: [...prev.apps, newApp] }));
         setEditingAppIndex(repo.apps.length);
         setActiveTab('apps');
+        addToast('New app added', 'success');
     };
 
     const handleSmartAppImport = (newApp: AppItem) => {
@@ -130,6 +127,7 @@ const App: React.FC = () => {
         setRepo(prev => ({ ...prev, apps: [...prev.apps, appWithId] }));
         setEditingAppIndex(repo.apps.length); 
         setActiveTab('apps');
+        addToast(`Imported ${newApp.name}`, 'success');
     };
 
     const updateApp = (index: number, updatedApp: AppItem) => {
@@ -146,6 +144,7 @@ const App: React.FC = () => {
             return { ...prev, apps: newApps };
         });
         setEditingAppIndex(null);
+        addToast('App deleted', 'info');
     };
 
     const generateJSON = () => {
@@ -156,8 +155,7 @@ const App: React.FC = () => {
 
     const copyToClipboard = () => {
         navigator.clipboard.writeText(generateJSON());
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        addToast('JSON copied to clipboard', 'success');
     };
 
     const downloadJSON = () => {
@@ -170,15 +168,33 @@ const App: React.FC = () => {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+        addToast('repo.json downloaded', 'success');
     };
 
     const repoIconError = validateURL(repo.iconURL, 'image');
     const repoHeaderError = validateURL(repo.headerImageURL, 'image');
     const repoWebsiteError = validateURL(repo.website, 'website');
 
+    // Filter apps for display
+    const filteredApps = repo.apps.filter(app => {
+        const q = searchQuery.toLowerCase();
+        return app.name.toLowerCase().includes(q) || 
+               app.bundleIdentifier?.toLowerCase().includes(q) ||
+               app.developerName?.toLowerCase().includes(q);
+    });
+
     return (
         <div className="h-screen bg-slate-950 text-slate-200 flex flex-col font-sans overflow-hidden">
             
+            {/* Toast Container */}
+            <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
+                {toasts.map(t => (
+                    <div className="pointer-events-auto" key={t.id}>
+                        <Toast toast={t} onClose={removeToast} />
+                    </div>
+                ))}
+            </div>
+
             <header className="bg-slate-900 border-b border-slate-800 h-16 md:h-14 flex items-center justify-between px-4 shrink-0 z-30 relative">
                 <div className="flex items-center gap-3">
                     <div className="w-8 h-8 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-900/50">
@@ -194,27 +210,6 @@ const App: React.FC = () => {
                     <button onClick={() => setShowImportModal(true)} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-lg text-sm font-medium border border-slate-700 transition-all">
                         <FileDown size={16} /> <span className="hidden sm:inline">Import</span>
                     </button>
-                    <div className="relative">
-                        <button onClick={() => setShowTemplates(!showTemplates)} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-lg text-sm font-medium border border-slate-700 transition-all">
-                            <BookOpen size={16} /> <span className="hidden sm:inline">Templates</span> <ChevronDown size={14} className={`transition-transform duration-200 ${showTemplates ? 'rotate-180' : ''}`} />
-                        </button>
-                        {showTemplates && (
-                            <>
-                                <div className="fixed inset-0 z-10" onClick={() => setShowTemplates(false)}></div>
-                                <div className="absolute top-full right-0 mt-2 w-56 bg-slate-800 border border-slate-700 rounded-xl shadow-xl z-20 overflow-hidden animate-in fade-in slide-in-from-top-2">
-                                    <div className="p-2 space-y-1">
-                                        <div className="text-[10px] font-bold text-slate-500 px-3 py-1 uppercase tracking-wider">Load Preset</div>
-                                        {Object.keys(SAMPLE_REPOS).map(key => (
-                                             <button key={key} onClick={(e) => { e.stopPropagation(); loadTemplate(key); }} className="w-full text-left px-3 py-2.5 text-sm text-slate-300 hover:bg-slate-700 hover:text-white rounded-lg transition-colors flex items-center gap-3 group">
-                                                {key === 'Empty Starter' ? <RotateCcw size={16} className="text-slate-500 group-hover:text-white" /> : <Layers size={16} className="text-indigo-400 group-hover:text-indigo-300" />}
-                                                <span>{key}</span>
-                                             </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            </>
-                        )}
-                    </div>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -222,7 +217,18 @@ const App: React.FC = () => {
                         <Cloud size={14} /> Deploy
                     </button>
                     <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
-                        <button onClick={() => setViewMode(viewMode === 'preview' ? 'editor' : 'preview')} className={`p-2 rounded-md transition-all ${viewMode === 'preview' ? 'bg-slate-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`} title="Preview">
+                         <button 
+                            onClick={() => setViewMode(viewMode === 'json' ? 'editor' : 'json')} 
+                            className={`p-2 rounded-md transition-all ${viewMode === 'json' ? 'bg-slate-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`} 
+                            title="View Code"
+                        >
+                            <Code size={18} />
+                        </button>
+                        <button 
+                            onClick={() => setViewMode(viewMode === 'preview' ? 'editor' : 'preview')} 
+                            className={`p-2 rounded-md transition-all ${viewMode === 'preview' ? 'bg-slate-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`} 
+                            title="Preview"
+                        >
                             <Smartphone size={18} />
                         </button>
                         <button onClick={() => setShowMobileAssistant(true)} className="md:hidden p-2 rounded-md text-indigo-400 hover:text-indigo-300 hover:bg-slate-700 transition-all" title="AI Assistant">
@@ -233,7 +239,8 @@ const App: React.FC = () => {
             </header>
 
             <div className="flex-1 flex overflow-hidden relative">
-                <div className={`flex-1 flex flex-col min-w-0 bg-slate-950 transition-all duration-300 ${viewMode === 'preview' ? 'hidden md:flex' : 'flex'}`}>
+                {/* Editor Panel - Hides on mobile if preview or json mode is active */}
+                <div className={`flex-1 flex flex-col min-w-0 bg-slate-950 transition-all duration-300 ${viewMode !== 'editor' ? 'hidden md:flex' : 'flex'}`}>
                     <div className="bg-slate-900/30 p-4 border-b border-slate-800 flex flex-wrap gap-4 items-center shrink-0">
                         <div className="flex gap-2 w-full">
                              <button onClick={addApp} className="flex-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2">
@@ -320,8 +327,7 @@ const App: React.FC = () => {
 
                                         <div className="flex flex-wrap gap-3">
                                             <button onClick={copyToClipboard} className="flex items-center gap-2 px-4 py-3 md:py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-sm font-medium transition-colors border border-slate-700 flex-1 md:flex-none justify-center">
-                                                {copied ? <Check size={16} className="text-green-400" /> : <Copy size={16} />}
-                                                {copied ? 'Copied' : 'Copy JSON'}
+                                                <Copy size={16} /> Copy JSON
                                             </button>
                                             <button onClick={downloadJSON} className="flex items-center gap-2 px-4 py-3 md:py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-sm font-medium transition-colors border border-slate-700 flex-1 md:flex-none justify-center">
                                                 <Download size={16} /> Download
@@ -333,7 +339,21 @@ const App: React.FC = () => {
 
                             {activeTab === 'apps' && (
                                 <div className="space-y-4 animate-in fade-in duration-300">
-                                    {repo.apps.map((app, index) => (
+                                    {/* Search Bar */}
+                                    {repo.apps.length > 0 && (
+                                        <div className="relative">
+                                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
+                                            <input 
+                                                type="text" 
+                                                placeholder="Search apps by name, bundle ID, or developer..."
+                                                value={searchQuery}
+                                                onChange={(e) => setSearchQuery(e.target.value)}
+                                                className="w-full bg-slate-900 border border-slate-800 rounded-xl py-3 pl-10 pr-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all"
+                                            />
+                                        </div>
+                                    )}
+
+                                    {filteredApps.map((app, index) => (
                                         <div key={app.id || index} className="bg-slate-900/50 rounded-2xl border border-slate-800 overflow-hidden">
                                             <div className="p-4 flex items-center gap-4 cursor-pointer hover:bg-slate-800/50 transition-colors" onClick={() => setEditingAppIndex(index === editingAppIndex ? null : index)}>
                                                 <div className="w-12 h-12 rounded-xl bg-slate-800 flex items-center justify-center overflow-hidden shrink-0">
@@ -353,6 +373,7 @@ const App: React.FC = () => {
                                             )}
                                         </div>
                                     ))}
+                                    
                                     {repo.apps.length === 0 && (
                                         <div className="text-center py-16 border-2 border-dashed border-slate-800 rounded-2xl bg-slate-900/20">
                                             <div className="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -362,8 +383,14 @@ const App: React.FC = () => {
                                             <p className="text-slate-400 mb-6 max-w-xs mx-auto text-sm">Use the Smart Add feature to generate an app from a link instantly.</p>
                                             <div className="flex gap-3 justify-center">
                                                 <button onClick={() => setShowAIImporter(true)} className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-full text-sm font-bold shadow-lg shadow-indigo-900/30 transition-all active:scale-95">Smart Add</button>
-                                                <button onClick={() => setShowTemplates(true)} className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-6 py-3 rounded-full text-sm font-bold border border-slate-700 transition-all active:scale-95">Use Template</button>
                                             </div>
+                                        </div>
+                                    )}
+
+                                    {repo.apps.length > 0 && filteredApps.length === 0 && (
+                                        <div className="text-center py-12 text-slate-500">
+                                            <p>No apps match "{searchQuery}"</p>
+                                            <button onClick={() => setSearchQuery('')} className="text-indigo-400 hover:underline mt-2 text-sm">Clear Search</button>
                                         </div>
                                     )}
                                 </div>
@@ -372,22 +399,39 @@ const App: React.FC = () => {
                     </div>
                 </div>
 
-                <div className={`fixed inset-0 z-40 bg-slate-950 md:relative md:inset-auto md:w-[400px] lg:w-[450px] md:border-l md:border-slate-800 md:flex flex-col transition-all duration-300 ${viewMode === 'preview' ? 'flex' : 'hidden md:flex'}`}>
+                {/* Right/Overlay Panel: Device Mockup OR Code View */}
+                <div className={`fixed inset-0 z-40 bg-slate-950 md:relative md:inset-auto md:w-[400px] lg:w-[450px] md:border-l md:border-slate-800 md:flex flex-col transition-all duration-300 ${viewMode !== 'editor' ? 'flex' : 'hidden md:flex'}`}>
                     <button onClick={() => setViewMode('editor')} className="md:hidden absolute top-4 right-4 z-50 p-2 bg-slate-800 rounded-full text-white shadow-lg"><X size={24} /></button>
                     
-                    {/* Updated DeviceMockup with onConfigure prop */}
-                    <div className="flex-1 overflow-hidden relative bg-slate-900/20 flex flex-col items-center justify-center">
-                        <DeviceMockup 
-                            device={device} 
-                            repo={repo} 
-                            previewApp={editingAppIndex !== null ? repo.apps[editingAppIndex] : undefined} 
-                            onConfigure={() => setShowDeviceManager(true)}
-                        />
-                    </div>
+                    {viewMode === 'json' ? (
+                        <div className="flex-1 flex flex-col h-full bg-slate-950 overflow-hidden animate-in fade-in">
+                            <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900">
+                                <h3 className="font-bold text-slate-200 flex items-center gap-2"><Code size={16} /> JSON Inspector</h3>
+                                <button onClick={copyToClipboard} className="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-md text-white transition-colors">Copy</button>
+                            </div>
+                            <div className="flex-1 overflow-auto p-4 custom-scrollbar">
+                                <pre className="font-mono text-xs text-green-400 whitespace-pre-wrap break-all">
+                                    {generateJSON()}
+                                </pre>
+                            </div>
+                        </div>
+                    ) : (
+                        <>
+                            {/* Device Mockup */}
+                            <div className="flex-1 overflow-hidden relative bg-slate-900/20 flex flex-col items-center justify-center">
+                                <DeviceMockup 
+                                    device={device} 
+                                    repo={repo} 
+                                    previewApp={editingAppIndex !== null ? repo.apps[editingAppIndex] : undefined} 
+                                    onConfigure={() => setShowDeviceManager(true)}
+                                />
+                            </div>
 
-                    <div className="hidden md:block p-4 border-t border-slate-800 bg-slate-900">
-                        <GeminiAssistant app={editingAppIndex !== null ? repo.apps[editingAppIndex] : undefined} device={device} />
-                    </div>
+                            <div className="hidden md:block p-4 border-t border-slate-800 bg-slate-900">
+                                <GeminiAssistant app={editingAppIndex !== null ? repo.apps[editingAppIndex] : undefined} device={device} />
+                            </div>
+                        </>
+                    )}
                 </div>
 
                 {showDeviceManager && (
