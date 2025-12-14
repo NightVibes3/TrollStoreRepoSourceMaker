@@ -13,7 +13,9 @@ export interface AppItem {
     iconURL: string;
     tintColor?: string;
     size?: number;
+    category?: string;
     screenshotURLs: string[];
+    compatibilityStatus?: 'safe' | 'jit_required' | 'trollstore_only' | 'jailbreak_only' | 'unknown';
 }
 
 export interface Repo {
@@ -53,7 +55,9 @@ export const DEFAULT_APP: AppItem = {
     iconURL: "https://placehold.co/128x128.png",
     tintColor: "#3b82f6",
     size: 0,
-    screenshotURLs: []
+    category: "Utilities",
+    screenshotURLs: [],
+    compatibilityStatus: 'unknown'
 };
 
 export const DEFAULT_REPO: Repo = {
@@ -92,7 +96,9 @@ export const SAMPLE_REPOS: Record<string, Repo> = {
                 localizedDescription: "The definitive all-in-one emulator for iPhone.",
                 iconURL: "https://github.com/rileytestut/Delta/raw/main/Assets/AppIcon.png",
                 tintColor: "#6d28d9",
-                downloadURL: ""
+                category: "Games",
+                downloadURL: "",
+                compatibilityStatus: 'safe'
             },
             {
                 ...DEFAULT_APP,
@@ -104,7 +110,9 @@ export const SAMPLE_REPOS: Record<string, Repo> = {
                 localizedDescription: "Multi-system emulator frontend supporting Atari, Sega, Nintendo, Sony and more.",
                 iconURL: "https://github.com/Provenance-Emu/Provenance/raw/develop/Provenance/Assets.xcassets/AppIcon.appiconset/Icon-60@3x.png",
                 tintColor: "#10b981",
-                downloadURL: ""
+                category: "Games",
+                downloadURL: "",
+                compatibilityStatus: 'safe'
             }
         ]
     },
@@ -126,7 +134,9 @@ export const SAMPLE_REPOS: Record<string, Repo> = {
                 localizedDescription: "Run virtual machines on iOS. Slow edition (No JIT).",
                 iconURL: "https://github.com/utmapp/UTM/raw/main/Platform/iOS/Images.xcassets/AppIcon.appiconset/1024.png",
                 tintColor: "#f43f5e",
-                downloadURL: ""
+                category: "Utilities",
+                downloadURL: "",
+                compatibilityStatus: 'safe'
             },
             {
                  ...DEFAULT_APP,
@@ -138,7 +148,9 @@ export const SAMPLE_REPOS: Record<string, Repo> = {
                  localizedDescription: "BitTorrent client for iOS.",
                  iconURL: "https://github.com/XITRIX/iTorrent/raw/master/iTorrent/Resources/Assets.xcassets/AppIcon.appiconset/1024.png",
                  tintColor: "#3b82f6",
-                 downloadURL: ""
+                 category: "Utilities",
+                 downloadURL: "",
+                 compatibilityStatus: 'safe'
             }
         ]
     }
@@ -200,50 +212,137 @@ export const validateURL = (url: string | undefined, context: 'image' | 'file' |
 // --- Shared Export Logic ---
 
 export const compareVersions = (v1: string, v2: string) => {
-    const p1 = v1.replace(/[^0-9.]/g, '').split('.').map(Number);
-    const p2 = v2.replace(/[^0-9.]/g, '').split('.').map(Number);
-    for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
-        const n1 = p1[i] || 0;
-        const n2 = p2[i] || 0;
-        if (n1 > n2) return 1;
-        if (n1 < n2) return -1;
+    // Helper to clean version strings
+    const clean = (v: string) => {
+        if (!v) return "";
+        return v.replace(/^v/i, '').trim();
+    };
+
+    const s1 = clean(v1);
+    const s2 = clean(v2);
+
+    // Exact string equality check first
+    if (s1 === s2) return 0;
+
+    // Numeric comparison strategy
+    const p1 = s1.replace(/[^0-9.]/g, '').split('.').map(n => parseInt(n));
+    const p2 = s2.replace(/[^0-9.]/g, '').split('.').map(n => parseInt(n));
+
+    const n1 = p1.filter(n => !isNaN(n));
+    const n2 = p2.filter(n => !isNaN(n));
+
+    // Fallback: If no valid numbers found (e.g. "Beta" vs "Alpha"), use string sort
+    if (n1.length === 0 && n2.length === 0) {
+        return s1.localeCompare(s2);
     }
+
+    const len = Math.max(n1.length, n2.length);
+    for (let i = 0; i < len; i++) {
+        const val1 = n1[i] || 0;
+        const val2 = n2[i] || 0;
+        if (val1 > val2) return 1;
+        if (val1 < val2) return -1;
+    }
+    
     return 0;
 };
 
-export const processRepoForExport = (repo: Repo, config: { deduplicate: boolean, filterIncompatible: boolean }): any => {
-    let processedApps = [...repo.apps];
+// Returns the list of apps that pass the filter and deduplication logic
+export const getFilteredApps = (apps: AppItem[], config: { deduplicate: boolean, filterIncompatible: boolean }): AppItem[] => {
+    // 0. Optimization: If all filters are disabled, return everything immediately
+    // This ensures that "Keep All" + "Show All" strictly respects the raw list length.
+    if (!config.deduplicate && !config.filterIncompatible) {
+        return apps;
+    }
 
-    // 1. Compatibility Filter (Remove apps that are explicitly marked as incompatible)
+    let processed = [...apps];
+
+    // 1. Compatibility Filter
     if (config.filterIncompatible) {
-        processedApps = processedApps.filter(app => {
-            const text = (app.name + " " + app.localizedDescription + " " + app.versionDescription).toLowerCase();
-            if (text.includes('jailbreak only') || text.includes('trollstore only') || text.includes('root required')) return false;
-            return true;
-        });
-    }
-
-    // 2. Deduplication (Latest Only Mode)
-    if (config.deduplicate) {
-        const latestMap = new Map<string, AppItem>();
-        processedApps.forEach(app => {
-            const existing = latestMap.get(app.bundleIdentifier);
-            if (!existing) {
-                latestMap.set(app.bundleIdentifier, app);
-            } else {
-                // If duplicates exist, keep the one with the higher version
-                if (compareVersions(app.version, existing.version) > 0) {
-                    latestMap.set(app.bundleIdentifier, app);
+        processed = processed.filter(app => {
+            // Priority: Explicit Status
+            if (app.compatibilityStatus && app.compatibilityStatus !== 'unknown') {
+                const blockedStatuses = ['jailbreak_only', 'trollstore_only', 'jit_required'];
+                if (blockedStatuses.includes(app.compatibilityStatus)) {
+                    return false; // Exclude
                 }
+                return true; // Keep safe apps
             }
+
+            // Fallback: Keyword Search
+            const text = (
+                (app.name || "") + " " + 
+                (app.localizedDescription || "") + " " + 
+                (app.versionDescription || "") + " " + 
+                (app.category || "")
+            ).toLowerCase();
+
+            const keywords = [
+                'jailbreak only', 
+                'jailbreak required', 
+                'requires jailbreak',
+                'trollstore only',
+                'trollstore required',
+                'requires trollstore',
+                'root required',
+                'root only',
+                'unsandboxed',
+                'no sandbox',
+                'jit required',
+                'requires jit'
+            ];
+            
+            // Returns TRUE to KEEP the app. So if keywords found, return FALSE.
+            return !keywords.some(k => text.includes(k));
         });
-        processedApps = Array.from(latestMap.values());
     }
 
-    // 3. Data Sanitization (Ensure valid icon URLs, remove empty screenshots)
+    // 2. Deduplication
+    if (!config.deduplicate) {
+        return processed;
+    }
+
+    // Deduplication Logic
+    const latestMap = new Map<string, AppItem>();
+    
+    processed.forEach(app => {
+        let key = `__id_${app.id}`; 
+        
+        const bid = (app.bundleIdentifier || "").trim().toLowerCase();
+        const name = (app.name || "").trim().toLowerCase();
+        
+        const isValidBID = bid.length > 0 && bid.includes('.');
+        
+        if (isValidBID) {
+            key = `bid:${bid}`;
+        } else if (name.length > 0) {
+            key = `name:${name}`;
+        }
+
+        const existing = latestMap.get(key);
+        
+        if (!existing) {
+            latestMap.set(key, app);
+        } else {
+            const diff = compareVersions(app.version, existing.version);
+            if (diff > 0) {
+                latestMap.set(key, app);
+            } else if (diff === 0) {
+                latestMap.set(key, app);
+            }
+        }
+    });
+    
+    return Array.from(latestMap.values());
+};
+
+export const processRepoForExport = (repo: Repo, config: { deduplicate: boolean, filterIncompatible: boolean }): any => {
+    const processedApps = getFilteredApps(repo.apps, config);
+
+    // 3. Data Sanitization
     return {
         ...repo,
-        apps: processedApps.map(({ id, ...rest }) => ({
+        apps: processedApps.map(({ id, compatibilityStatus, ...rest }) => ({
             ...rest,
             iconURL: rest.iconURL || "https://placehold.co/128x128.png",
             screenshotURLs: rest.screenshotURLs.filter(u => u && u.trim() !== "")

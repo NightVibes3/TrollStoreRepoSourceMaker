@@ -5,9 +5,10 @@ import { Cloud, Check, Copy, AlertCircle, Loader2, Server, Github, Globe, Lock, 
 interface PublishManagerProps {
     repo: Repo;
     onClose: () => void;
+    initialConfig?: { deduplicate: boolean, filterIncompatible: boolean };
 }
 
-export const PublishManager: React.FC<PublishManagerProps> = ({ repo, onClose }) => {
+export const PublishManager: React.FC<PublishManagerProps> = ({ repo, onClose, initialConfig }) => {
     const [token, setToken] = useState('');
     const [deployType, setDeployType] = useState<'public' | 'secret'>('public');
     const [loading, setLoading] = useState(false);
@@ -15,8 +16,8 @@ export const PublishManager: React.FC<PublishManagerProps> = ({ repo, onClose })
     const [history, setHistory] = useState<Deployment[]>([]);
     const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
 
-    // Export Config State (Matching App.tsx)
-    const [exportConfig, setExportConfig] = useState({
+    // Initial state derived from props; independent for this modal instance
+    const [exportConfig, setExportConfig] = useState(initialConfig || {
         deduplicate: true, 
         filterIncompatible: true 
     });
@@ -116,7 +117,7 @@ export const PublishManager: React.FC<PublishManagerProps> = ({ repo, onClose })
                             </p>
                         </div>
 
-                        {/* Export Config Section - ADDED HERE */}
+                        {/* Export Config Section */}
                         <div className="bg-slate-950 rounded-lg p-3 border border-slate-800">
                              <div className="flex items-center justify-between mb-3 border-b border-slate-800 pb-2">
                                 <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wide flex items-center gap-1.5">
@@ -126,19 +127,28 @@ export const PublishManager: React.FC<PublishManagerProps> = ({ repo, onClose })
                             
                             <div className="space-y-3">
                                 <div className="flex gap-2">
-                                    <button onClick={() => setExportConfig(c => ({ ...c, deduplicate: true }))} className={`flex-1 py-1.5 px-2 rounded text-xs font-medium border ${exportConfig.deduplicate ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/50' : 'bg-slate-900 text-slate-500 border-transparent'}`}>
+                                    <button 
+                                        type="button"
+                                        onClick={() => setExportConfig(c => ({ ...c, deduplicate: true }))} 
+                                        className={`flex-1 py-1.5 px-2 rounded text-xs font-medium border ${exportConfig.deduplicate ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/50' : 'bg-slate-900 text-slate-500 border-transparent'}`}
+                                    >
                                         <div className="flex items-center justify-center gap-1.5"><Layers size={12} /> Latest Only</div>
                                     </button>
-                                    <button onClick={() => setExportConfig(c => ({ ...c, deduplicate: false }))} className={`flex-1 py-1.5 px-2 rounded text-xs font-medium border ${!exportConfig.deduplicate ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/50' : 'bg-slate-900 text-slate-500 border-transparent'}`}>
+                                    <button 
+                                        type="button"
+                                        onClick={() => setExportConfig(c => ({ ...c, deduplicate: false }))} 
+                                        className={`flex-1 py-1.5 px-2 rounded text-xs font-medium border ${!exportConfig.deduplicate ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/50' : 'bg-slate-900 text-slate-500 border-transparent'}`}
+                                    >
                                         <div className="flex items-center justify-center gap-1.5"><History size={12} /> Archive All</div>
                                     </button>
                                 </div>
 
-                                <div className="flex items-center justify-between bg-slate-900 p-2 rounded border border-slate-800" onClick={() => setExportConfig(c => ({ ...c, filterIncompatible: !c.filterIncompatible }))}>
-                                    <div className="cursor-pointer">
-                                        <div className="text-xs font-bold text-slate-400 flex items-center gap-1.5"><ShieldAlert size={12} /> Filter Jailbreak Apps</div>
+                                <div className="flex items-center justify-between bg-slate-900 p-2 rounded border border-slate-800 cursor-pointer group" onClick={() => setExportConfig(c => ({ ...c, filterIncompatible: !c.filterIncompatible }))}>
+                                    <div className="flex items-center gap-1.5">
+                                        <ShieldAlert size={12} className={exportConfig.filterIncompatible ? 'text-green-400' : 'text-slate-500'} />
+                                        <span className={`text-xs font-bold transition-colors ${exportConfig.filterIncompatible ? 'text-green-300' : 'text-slate-500'}`}>Filter Jailbreak Apps</span>
                                     </div>
-                                    <div className={`w-8 h-4 rounded-full transition-colors relative cursor-pointer ${exportConfig.filterIncompatible ? 'bg-green-600' : 'bg-slate-700'}`}>
+                                    <div className={`w-8 h-4 rounded-full transition-colors relative ${exportConfig.filterIncompatible ? 'bg-green-600' : 'bg-slate-700'}`}>
                                         <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${exportConfig.filterIncompatible ? 'left-4.5' : 'left-0.5'}`} style={{ left: exportConfig.filterIncompatible ? '18px' : '2px' }}></div>
                                     </div>
                                 </div>

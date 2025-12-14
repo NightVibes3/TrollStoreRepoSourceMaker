@@ -1,23 +1,22 @@
-import React, { useState, useEffect } from 'react';
-import { Repo, AppItem, DeviceProfile, DEFAULT_REPO, DEFAULT_APP, DEFAULT_DEVICE, validateURL, processRepoForExport } from './types';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { Repo, AppItem, DeviceProfile, DEFAULT_REPO, DEFAULT_APP, DEFAULT_DEVICE, validateURL, processRepoForExport, getFilteredApps } from './types';
 import { InputGroup } from './components/InputGroup';
-import { AppEditor } from './components/AppEditor';
+import { AppCard } from './components/AppCard';
 import { DeviceMockup } from './components/DeviceMockup';
 import { GeminiAssistant } from './components/GeminiAssistant';
 import { PublishManager } from './components/PublishManager';
 import { AIImporter } from './components/AIImporter';
 import { ImportModal } from './components/ImportModal';
 import { DeviceManager } from './components/DeviceManager';
+import { CompatibilityScanner } from './components/CompatibilityScanner';
 import { Toast, ToastMessage, ToastType } from './components/Toast';
 import { 
     Download, 
-    Upload, 
     Plus, 
     Copy, 
     LayoutTemplate, 
     Smartphone,
     Code,
-    Check,
     Cloud,
     Sparkles,
     Bot,
@@ -27,8 +26,9 @@ import {
     Filter,
     ShieldAlert,
     History,
-    Settings,
-    Search
+    Search,
+    Check,
+    ScanEye
 } from 'lucide-react';
 
 const generateId = () => Math.random().toString(36).substring(2, 9) + Date.now().toString(36);
@@ -43,7 +43,10 @@ const App: React.FC = () => {
                 parsed.apps = parsed.apps.map(app => ({
                     ...app,
                     id: app.id || generateId(),
-                    iconURL: app.iconURL || "https://placehold.co/128x128.png"
+                    iconURL: app.iconURL || "https://placehold.co/128x128.png",
+                    category: app.category || "Utilities",
+                    // Ensure compatibilityStatus exists on load
+                    compatibilityStatus: app.compatibilityStatus || 'unknown'
                 }));
                 return parsed;
             } catch (e) {
@@ -66,7 +69,8 @@ const App: React.FC = () => {
         return DEFAULT_DEVICE;
     });
 
-    const [editingAppIndex, setEditingAppIndex] = useState<number | null>(null);
+    // Use ID for selection to stay stable during sorts/filters
+    const [editingAppId, setEditingAppId] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<'details' | 'apps'>('details');
     
     // UI State
@@ -76,32 +80,39 @@ const App: React.FC = () => {
     const [showImportModal, setShowImportModal] = useState(false);
     const [showMobileAssistant, setShowMobileAssistant] = useState(false);
     const [showDeviceManager, setShowDeviceManager] = useState(false);
+    const [showScanner, setShowScanner] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-    // Export Options (Local)
+    // Export Options
     const [exportConfig, setExportConfig] = useState({
         deduplicate: true, 
         filterIncompatible: true 
     });
 
+    // Persistence
     useEffect(() => {
         localStorage.setItem('trollapps-repo-draft', JSON.stringify(repo));
-        localStorage.setItem('trollapps-device-profile', JSON.stringify(device));
-    }, [repo, device]);
+    }, [repo]);
 
-    const addToast = (text: string, type: ToastType = 'info') => {
+    useEffect(() => {
+        localStorage.setItem('trollapps-device-profile', JSON.stringify(device));
+    }, [device]);
+
+    // --- Actions ---
+
+    const addToast = useCallback((text: string, type: ToastType = 'info') => {
         const id = Math.random().toString(36).substring(2, 9);
         setToasts(prev => [...prev, { id, text, type }]);
-    };
+    }, []);
 
-    const removeToast = (id: string) => {
+    const removeToast = useCallback((id: string) => {
         setToasts(prev => prev.filter(t => t.id !== id));
-    };
+    }, []);
 
     const handleImportRepo = (newRepo: Repo) => {
         setRepo(newRepo);
-        setEditingAppIndex(null);
+        setEditingAppId(null);
         setActiveTab('apps');
         addToast(`Imported "${newRepo.name}" with ${newRepo.apps.length} apps`, 'success');
     };
@@ -111,44 +122,90 @@ const App: React.FC = () => {
     };
 
     const addApp = () => {
+        const id = generateId();
         const newApp: AppItem = {
             ...DEFAULT_APP,
-            id: generateId(),
+            id,
             name: `New App ${repo.apps.length + 1}`
         };
         setRepo(prev => ({ ...prev, apps: [...prev.apps, newApp] }));
-        setEditingAppIndex(repo.apps.length);
+        setEditingAppId(id);
         setActiveTab('apps');
         addToast('New app added', 'success');
     };
 
     const handleSmartAppImport = (newApp: AppItem) => {
-        const appWithId = { ...newApp, id: generateId() };
+        const id = generateId();
+        const appWithId = { ...newApp, id };
         setRepo(prev => ({ ...prev, apps: [...prev.apps, appWithId] }));
-        setEditingAppIndex(repo.apps.length); 
+        setEditingAppId(id); 
         setActiveTab('apps');
         addToast(`Imported ${newApp.name}`, 'success');
     };
 
-    const updateApp = (index: number, updatedApp: AppItem) => {
+    // Memoized update function using ID - O(N) complexity only on interaction
+    const updateApp = useCallback((id: string, updatedApp: AppItem) => {
         setRepo(prev => {
+            const index = prev.apps.findIndex(a => a.id === id);
+            if (index === -1) return prev;
+
+            // Strict equality check to avoid re-renders if nothing changed
+            if (JSON.stringify(prev.apps[index]) === JSON.stringify(updatedApp)) {
+                return prev;
+            }
+
             const newApps = [...prev.apps];
             newApps[index] = updatedApp;
             return { ...prev, apps: newApps };
         });
-    };
+    }, []);
 
-    const deleteApp = (index: number) => {
-        setRepo(prev => {
-            const newApps = prev.apps.filter((_, i) => i !== index);
-            return { ...prev, apps: newApps };
-        });
-        setEditingAppIndex(null);
+    const handleScanUpdates = useCallback((updates: Record<string, AppItem['compatibilityStatus']>) => {
+        setRepo(prev => ({
+            ...prev,
+            apps: prev.apps.map(app => {
+                if (updates[app.id]) {
+                    return { ...app, compatibilityStatus: updates[app.id] };
+                }
+                return app;
+            })
+        }));
+    }, []);
+
+    // Stable Delete Function
+    const deleteApp = useCallback((id: string) => {
+        setRepo(prev => ({
+            ...prev,
+            apps: prev.apps.filter(a => a.id !== id)
+        }));
+        setEditingAppId(null);
         addToast('App deleted', 'info');
-    };
+    }, [addToast]);
+
+    // Stable Toggle Function
+    const handleToggleEdit = useCallback((id: string) => {
+        setEditingAppId(prev => (prev === id ? null : id));
+    }, []);
+
+    // Stable Close Function (CRITICAL FOR MEMOIZATION)
+    const handleCloseEdit = useCallback(() => {
+        setEditingAppId(null);
+    }, []);
+
+    // --- Computed Data ---
+
+    // Calculate the array of apps that will be included in the export.
+    // We use this array for the count and to generate the Set of IDs for the UI visual state.
+    const filteredExportApps = useMemo(() => {
+        return getFilteredApps(repo.apps, exportConfig);
+    }, [repo.apps, exportConfig]);
+
+    const includedIds = useMemo(() => {
+        return new Set(filteredExportApps.map(a => a.id));
+    }, [filteredExportApps]);
 
     const generateJSON = () => {
-        // Use the shared processor for consistency
+        // Always use the current exportConfig from state
         const finalRepo = processRepoForExport(repo, exportConfig);
         return JSON.stringify(finalRepo, null, 4);
     };
@@ -171,22 +228,36 @@ const App: React.FC = () => {
         addToast('repo.json downloaded', 'success');
     };
 
+    // Memoize filtered and grouped apps for display
+    const filteredApps = useMemo(() => {
+        const q = searchQuery.toLowerCase();
+        return repo.apps.filter(app => 
+            app.name.toLowerCase().includes(q) || 
+            app.bundleIdentifier?.toLowerCase().includes(q) ||
+            app.developerName?.toLowerCase().includes(q)
+        );
+    }, [repo.apps, searchQuery]);
+
+    const groupedApps = useMemo(() => {
+        return filteredApps.reduce((acc, app) => {
+            const cat = app.category || "Uncategorized";
+            if (!acc[cat]) acc[cat] = [];
+            acc[cat].push(app);
+            return acc;
+        }, {} as Record<string, AppItem[]>);
+    }, [filteredApps]);
+
+    const editingApp = useMemo(() => 
+        repo.apps.find(a => a.id === editingAppId), 
+    [repo.apps, editingAppId]);
+
     const repoIconError = validateURL(repo.iconURL, 'image');
     const repoHeaderError = validateURL(repo.headerImageURL, 'image');
     const repoWebsiteError = validateURL(repo.website, 'website');
 
-    // Filter apps for display
-    const filteredApps = repo.apps.filter(app => {
-        const q = searchQuery.toLowerCase();
-        return app.name.toLowerCase().includes(q) || 
-               app.bundleIdentifier?.toLowerCase().includes(q) ||
-               app.developerName?.toLowerCase().includes(q);
-    });
-
     return (
         <div className="h-screen bg-slate-950 text-slate-200 flex flex-col font-sans overflow-hidden">
             
-            {/* Toast Container */}
             <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
                 {toasts.map(t => (
                     <div className="pointer-events-auto" key={t.id}>
@@ -195,7 +266,7 @@ const App: React.FC = () => {
                 ))}
             </div>
 
-            <header className="bg-slate-900 border-b border-slate-800 h-16 md:h-14 flex items-center justify-between px-4 shrink-0 z-30 relative">
+            <header className="bg-slate-900 border-b border-slate-800 h-16 md:h-14 flex items-center justify-between px-4 shrink-0 z-30 relative shadow-md">
                 <div className="flex items-center gap-3">
                     <div className="w-8 h-8 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-900/50">
                         <LayoutTemplate size={18} className="text-white" />
@@ -239,7 +310,7 @@ const App: React.FC = () => {
             </header>
 
             <div className="flex-1 flex overflow-hidden relative">
-                {/* Editor Panel - Hides on mobile if preview or json mode is active */}
+                {/* Editor Panel */}
                 <div className={`flex-1 flex flex-col min-w-0 bg-slate-950 transition-all duration-300 ${viewMode !== 'editor' ? 'hidden md:flex' : 'flex'}`}>
                     <div className="bg-slate-900/30 p-4 border-b border-slate-800 flex flex-wrap gap-4 items-center shrink-0">
                         <div className="flex gap-2 w-full">
@@ -253,7 +324,7 @@ const App: React.FC = () => {
                     </div>
 
                     <div className="flex border-b border-slate-800 bg-slate-900/30 px-6 pt-4 gap-6 shrink-0">
-                        <button onClick={() => { setActiveTab('details'); setEditingAppIndex(null); }} className={`pb-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'details' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>
+                        <button onClick={() => { setActiveTab('details'); setEditingAppId(null); }} className={`pb-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'details' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>
                             Repo Details
                         </button>
                         <button onClick={() => setActiveTab('apps')} className={`pb-3 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${activeTab === 'apps' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>
@@ -265,7 +336,7 @@ const App: React.FC = () => {
                         <div className="max-w-3xl mx-auto space-y-6 pb-32 md:pb-20">
                             {activeTab === 'details' && (
                                 <div className="space-y-6 animate-in fade-in duration-300">
-                                    <div className="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 space-y-6">
+                                    <div className="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 space-y-6 shadow-sm">
                                         <div className="grid md:grid-cols-2 gap-4">
                                             <InputGroup label="Repo Name" value={repo.name} onChange={(v) => handleRepoChange('name', v)} />
                                             <InputGroup label="Subtitle" value={repo.subtitle} onChange={(v) => handleRepoChange('subtitle', v)} />
@@ -280,7 +351,7 @@ const App: React.FC = () => {
                                         </div>
                                     </div>
                                     
-                                    <div className="bg-slate-900/50 p-6 rounded-2xl border border-slate-800">
+                                    <div className="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 shadow-sm">
                                         <div className="flex items-center justify-between mb-4 pb-4 border-b border-slate-800">
                                             <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
                                                 <Filter size={16} /> Local Export Configuration
@@ -292,19 +363,27 @@ const App: React.FC = () => {
                                                 <div className="bg-slate-950 rounded-lg p-3 border border-slate-800">
                                                     <label className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2 block">Deduplication Mode</label>
                                                     <div className="flex gap-2">
-                                                        <button onClick={() => setExportConfig(c => ({ ...c, deduplicate: true }))} className={`flex-1 py-2 px-3 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-2 border ${exportConfig.deduplicate ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/50' : 'bg-slate-900 text-slate-500 border-transparent hover:bg-slate-800'}`}>
+                                                        <button 
+                                                            type="button"
+                                                            onClick={() => setExportConfig(c => ({ ...c, deduplicate: true }))} 
+                                                            className={`flex-1 py-2 px-3 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-2 border ${exportConfig.deduplicate ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/50' : 'bg-slate-900 text-slate-500 border-transparent hover:bg-slate-800'}`}
+                                                        >
                                                             <Layers size={14} /> Latest Only
                                                         </button>
-                                                        <button onClick={() => setExportConfig(c => ({ ...c, deduplicate: false }))} className={`flex-1 py-2 px-3 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-2 border ${!exportConfig.deduplicate ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/50' : 'bg-slate-900 text-slate-500 border-transparent hover:bg-slate-800'}`}>
+                                                        <button 
+                                                            type="button"
+                                                            onClick={() => setExportConfig(c => ({ ...c, deduplicate: false }))} 
+                                                            className={`flex-1 py-2 px-3 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-2 border ${!exportConfig.deduplicate ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/50' : 'bg-slate-900 text-slate-500 border-transparent hover:bg-slate-800'}`}
+                                                        >
                                                             <History size={14} /> Keep All
                                                         </button>
                                                     </div>
                                                 </div>
 
                                                 <div className="bg-slate-950 rounded-lg p-3 border border-slate-800 flex flex-col justify-center">
-                                                    <div className="flex items-center justify-between cursor-pointer" onClick={() => setExportConfig(c => ({ ...c, filterIncompatible: !c.filterIncompatible }))}>
+                                                    <div className="flex items-center justify-between cursor-pointer select-none group" onClick={() => setExportConfig(c => ({ ...c, filterIncompatible: !c.filterIncompatible }))}>
                                                         <div>
-                                                            <div className="text-xs font-bold text-slate-400 uppercase tracking-wide flex items-center gap-1.5">
+                                                            <div className="text-xs font-bold text-slate-400 uppercase tracking-wide flex items-center gap-1.5 group-hover:text-slate-300 transition-colors">
                                                                 <ShieldAlert size={12} /> Compatibility Filter
                                                             </div>
                                                             <p className="text-[10px] text-slate-500 mt-1">Remove "Jailbreak Only" apps</p>
@@ -317,11 +396,16 @@ const App: React.FC = () => {
                                             </div>
                                             
                                             <div className="bg-blue-900/10 border border-blue-900/30 rounded-lg p-3">
-                                                <p className="text-xs text-blue-300/80 leading-relaxed">
-                                                    {exportConfig.deduplicate 
-                                                        ? "Exporting in 'Latest Only' mode. Duplicate Bundle IDs will be merged to keep only the highest version." 
-                                                        : "Exporting in 'Archive' mode. All app entries, including duplicates and older versions, will be preserved."}
-                                                </p>
+                                                <div className="flex items-start gap-2">
+                                                    <div className="text-xs text-blue-300/80 leading-relaxed flex-1">
+                                                        {exportConfig.deduplicate 
+                                                            ? "Exporting in 'Latest Only' mode. Duplicate Bundle IDs will be merged to keep only the highest version." 
+                                                            : "Exporting in 'Archive' mode. All app entries, including duplicates and older versions, will be preserved."}
+                                                    </div>
+                                                    <div className="text-xs font-mono font-bold text-blue-300 bg-blue-900/30 px-2 py-1 rounded whitespace-nowrap">
+                                                        Exporting: {filteredExportApps.length} / {repo.apps.length}
+                                                    </div>
+                                                </div>
                                             </div>
                                         </div>
 
@@ -339,9 +423,8 @@ const App: React.FC = () => {
 
                             {activeTab === 'apps' && (
                                 <div className="space-y-4 animate-in fade-in duration-300">
-                                    {/* Search Bar */}
                                     {repo.apps.length > 0 && (
-                                        <div className="relative">
+                                        <div className="relative mb-6">
                                             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
                                             <input 
                                                 type="text" 
@@ -353,26 +436,76 @@ const App: React.FC = () => {
                                         </div>
                                     )}
 
-                                    {filteredApps.map((app, index) => (
-                                        <div key={app.id || index} className="bg-slate-900/50 rounded-2xl border border-slate-800 overflow-hidden">
-                                            <div className="p-4 flex items-center gap-4 cursor-pointer hover:bg-slate-800/50 transition-colors" onClick={() => setEditingAppIndex(index === editingAppIndex ? null : index)}>
-                                                <div className="w-12 h-12 rounded-xl bg-slate-800 flex items-center justify-center overflow-hidden shrink-0">
-                                                    {app.iconURL ? <img src={app.iconURL} alt="" className="w-full h-full object-cover" /> : <Smartphone size={20} className="text-slate-600" />}
-                                                </div>
-                                                <div className="flex-1 min-w-0">
-                                                    <h3 className="font-semibold text-white truncate text-lg">{app.name}</h3>
-                                                    <p className="text-xs text-slate-400 truncate">{app.bundleIdentifier || "No Bundle ID"} • v{app.version}</p>
-                                                </div>
-                                                <div className="px-2.5 py-1 rounded-full bg-slate-800 text-xs text-slate-400 font-mono">#{index + 1}</div>
-                                            </div>
-                                            
-                                            {editingAppIndex === index && (
-                                                <div className="border-t border-slate-800 p-4 bg-slate-900/80">
-                                                    <AppEditor app={app} index={index} onUpdate={updateApp} onDelete={deleteApp} onClose={() => setEditingAppIndex(null)} />
-                                                </div>
-                                            )}
+                                    {/* Quick Filter Toolbar */}
+                                    <div className="flex flex-wrap gap-2 mb-4 overflow-x-auto pb-2 no-scrollbar">
+                                        <button 
+                                            onClick={() => setExportConfig(c => ({ ...c, deduplicate: !c.deduplicate }))}
+                                            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                                                exportConfig.deduplicate 
+                                                ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/50' 
+                                                : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                                            }`}
+                                        >
+                                            <Layers size={12} />
+                                            {exportConfig.deduplicate ? 'Latest Only' : 'Keep All'}
+                                        </button>
+                                        
+                                        <button 
+                                            onClick={() => setExportConfig(c => ({ ...c, filterIncompatible: !c.filterIncompatible }))}
+                                            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                                                exportConfig.filterIncompatible 
+                                                ? 'bg-green-600/20 text-green-300 border-green-500/50' 
+                                                : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                                            }`}
+                                        >
+                                            <ShieldAlert size={12} />
+                                            {exportConfig.filterIncompatible ? 'Hide Incompatible' : 'Show All'}
+                                        </button>
+
+                                        <button 
+                                            onClick={() => setShowScanner(true)}
+                                            className="px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap bg-indigo-600/20 text-indigo-300 border-indigo-500/50 hover:bg-indigo-600/30"
+                                        >
+                                            <ScanEye size={12} />
+                                            AI Scan
+                                        </button>
+
+                                        <div className="ml-auto px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800 text-[10px] font-mono text-slate-500 flex items-center gap-1.5 whitespace-nowrap">
+                                            <Check size={10} className="text-blue-500" />
+                                            <span>Exporting: <span className="text-white font-bold">{filteredExportApps.length}</span> / {repo.apps.length}</span>
                                         </div>
-                                    ))}
+                                    </div>
+
+                                    {Object.keys(groupedApps).length > 0 ? (
+                                        Object.entries(groupedApps).sort().map(([category, apps]: [string, AppItem[]]) => (
+                                            <div key={category} className="mb-8">
+                                                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 px-1 flex items-center gap-2">
+                                                    <Layers size={12} /> {category}
+                                                </h3>
+                                                <div className="grid gap-4">
+                                                    {apps.map((app) => (
+                                                        <AppCard
+                                                            key={app.id}
+                                                            app={app}
+                                                            isEditing={editingAppId === app.id}
+                                                            isExcluded={!includedIds.has(app.id)}
+                                                            onToggleEdit={handleToggleEdit}
+                                                            onUpdate={updateApp}
+                                                            onDelete={deleteApp}
+                                                            onCloseEdit={handleCloseEdit}
+                                                        />
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))
+                                    ) : (
+                                         repo.apps.length > 0 && (
+                                            <div className="text-center py-12 text-slate-500">
+                                                <p>No apps match "{searchQuery}"</p>
+                                                <button onClick={() => setSearchQuery('')} className="text-indigo-400 hover:underline mt-2 text-sm">Clear Search</button>
+                                            </div>
+                                        )
+                                    )}
                                     
                                     {repo.apps.length === 0 && (
                                         <div className="text-center py-16 border-2 border-dashed border-slate-800 rounded-2xl bg-slate-900/20">
@@ -386,20 +519,13 @@ const App: React.FC = () => {
                                             </div>
                                         </div>
                                     )}
-
-                                    {repo.apps.length > 0 && filteredApps.length === 0 && (
-                                        <div className="text-center py-12 text-slate-500">
-                                            <p>No apps match "{searchQuery}"</p>
-                                            <button onClick={() => setSearchQuery('')} className="text-indigo-400 hover:underline mt-2 text-sm">Clear Search</button>
-                                        </div>
-                                    )}
                                 </div>
                             )}
                         </div>
                     </div>
                 </div>
 
-                {/* Right/Overlay Panel: Device Mockup OR Code View */}
+                {/* Right/Overlay Panel */}
                 <div className={`fixed inset-0 z-40 bg-slate-950 md:relative md:inset-auto md:w-[400px] lg:w-[450px] md:border-l md:border-slate-800 md:flex flex-col transition-all duration-300 ${viewMode !== 'editor' ? 'flex' : 'hidden md:flex'}`}>
                     <button onClick={() => setViewMode('editor')} className="md:hidden absolute top-4 right-4 z-50 p-2 bg-slate-800 rounded-full text-white shadow-lg"><X size={24} /></button>
                     
@@ -417,23 +543,29 @@ const App: React.FC = () => {
                         </div>
                     ) : (
                         <>
-                            {/* Device Mockup */}
                             <div className="flex-1 overflow-hidden relative bg-slate-900/20 flex flex-col items-center justify-center">
                                 <DeviceMockup 
                                     device={device} 
                                     repo={repo} 
-                                    previewApp={editingAppIndex !== null ? repo.apps[editingAppIndex] : undefined} 
+                                    previewApp={editingApp} 
                                     onConfigure={() => setShowDeviceManager(true)}
                                 />
                             </div>
-
                             <div className="hidden md:block p-4 border-t border-slate-800 bg-slate-900">
-                                <GeminiAssistant app={editingAppIndex !== null ? repo.apps[editingAppIndex] : undefined} device={device} />
+                                <GeminiAssistant app={editingApp} device={device} />
                             </div>
                         </>
                     )}
                 </div>
 
+                {/* Modals */}
+                {showScanner && (
+                    <CompatibilityScanner 
+                        apps={repo.apps} 
+                        onUpdateApps={handleScanUpdates} 
+                        onClose={() => setShowScanner(false)} 
+                    />
+                )}
                 {showDeviceManager && (
                     <DeviceManager 
                         device={device} 
@@ -449,11 +581,11 @@ const App: React.FC = () => {
                                 <h3 className="font-bold text-white flex items-center gap-2"><Bot className="text-indigo-400" size={20} /> AI Assistant</h3>
                                 <button onClick={() => setShowMobileAssistant(false)} className="p-1 rounded-full hover:bg-slate-800 text-slate-400"><X size={20} /></button>
                             </div>
-                            <div className="p-4"><GeminiAssistant app={editingAppIndex !== null ? repo.apps[editingAppIndex] : undefined} device={device} /></div>
+                            <div className="p-4"><GeminiAssistant app={editingApp} device={device} /></div>
                         </div>
                     </div>
                 )}
-                {showPublishModal && <PublishManager repo={repo} onClose={() => setShowPublishModal(false)} />}
+                {showPublishModal && <PublishManager repo={repo} onClose={() => setShowPublishModal(false)} initialConfig={exportConfig} />}
                 {showAIImporter && <AIImporter onImport={handleSmartAppImport} onClose={() => setShowAIImporter(false)} />}
                 {showImportModal && <ImportModal onImport={handleImportRepo} onClose={() => setShowImportModal(false)} />}
             </div>

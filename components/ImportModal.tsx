@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Repo, DEFAULT_REPO } from '../types';
-import { X, Globe, Code, Loader2, AlertCircle, FileJson, ArrowRight, CheckCircle2, Smartphone, Layers } from 'lucide-react';
+import { X, Globe, Code, Loader2, AlertCircle, FileJson, ArrowRight, CheckCircle2, Smartphone, Layers, Package } from 'lucide-react';
 
 interface ImportModalProps {
     onImport: (repo: Repo) => void;
@@ -18,9 +18,131 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onImport, onClose }) =
     // Robust string cleaner that removes BOM and weird whitespace
     const cleanString = (str: string) => str.replace(/^\uFEFF/, '').trim();
 
+    // --- Cydia/APT Parsing Logic ---
+    const handleCydiaImport = async (baseUrl: string) => {
+        // Ensure trailing slash for relative path resolution
+        const url = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+        
+        let name = "Imported Repo";
+        let description = "";
+        let iconURL = "";
+        let website = url;
+
+        // 1. Try fetching Release file for metadata (Optional)
+        try {
+            const releaseRes = await fetch(`${url}Release`);
+            if (releaseRes.ok) {
+                const text = await releaseRes.text();
+                const info: any = {};
+                text.split('\n').forEach(line => {
+                    const [k, ...v] = line.split(':');
+                    if (k && v) info[k.trim().toLowerCase()] = v.join(':').trim();
+                });
+                name = info.origin || info.label || name;
+                description = info.description || description;
+            }
+        } catch (e) {
+            console.log("Release file fetch failed, skipping metadata");
+        }
+
+        // 2. Fetch Packages (Try plaintext, then GZ)
+        let packagesText = "";
+        
+        try {
+            // Try plaintext first
+            const res = await fetch(`${url}Packages`);
+            if (res.ok) {
+                packagesText = await res.text();
+            } else {
+                throw new Error("No plaintext");
+            }
+        } catch (e) {
+            // Try Packages.gz using DecompressionStream
+            try {
+                const res = await fetch(`${url}Packages.gz`);
+                if (res.ok && res.body) {
+                    try {
+                        const ds = new DecompressionStream('gzip');
+                        const decompressed = res.body.pipeThrough(ds);
+                        packagesText = await new Response(decompressed).text();
+                    } catch (streamErr) {
+                         // Fallback for older browsers or non-stream bodies
+                        console.error("Decompression failed", streamErr);
+                        throw new Error("Browser does not support GZIP decompression stream.");
+                    }
+                } else {
+                    throw new Error("Packages file not found");
+                }
+            } catch (gzErr) {
+                console.error(gzErr);
+                throw new Error(`Failed to fetch packages from ${url}. The repo might block browser access (CORS).`);
+            }
+        }
+
+        if (!packagesText) throw new Error("Could not retrieve package list.");
+
+        // 3. Parse Packages (Debian Control Format)
+        const apps: any[] = [];
+        // Blocks are separated by blank lines
+        const blocks = packagesText.split(/\n\n+/);
+        
+        for (const block of blocks) {
+            if (!block.trim()) continue;
+            
+            const info: any = {};
+            // Parse Key: Value
+            block.split('\n').forEach(line => {
+                 const match = line.match(/^([a-zA-Z0-9-]+):\s*(.+)$/);
+                 if (match) info[match[1].toLowerCase()] = match[2];
+            });
+
+            // "Filename" is required for a valid download
+            if (info.package && info.filename) {
+                // Resolve URL: It is usually relative to the repo root
+                const dlUrl = new URL(info.filename, url).toString();
+                // Resolve Icon: Cydia repos use 'Icon', sometimes valid URL, sometimes relative
+                let icon = "";
+                if (info.icon) {
+                     try {
+                        icon = new URL(info.icon, url).toString();
+                     } catch(e) { icon = info.icon; } // Keep as is if parsing fails
+                }
+                
+                apps.push({
+                    id: info.package,
+                    name: info.name || info.package,
+                    bundleIdentifier: info.package,
+                    developerName: info.author || info.maintainer || "Unknown",
+                    version: info.version || "1.0",
+                    versionDate: new Date().toISOString().split('T')[0],
+                    versionDescription: "Imported from Cydia Repo",
+                    downloadURL: dlUrl,
+                    localizedDescription: info.description || "No description provided.",
+                    iconURL: icon,
+                    tintColor: "#3b82f6",
+                    size: 0,
+                    screenshotURLs: []
+                });
+            }
+        }
+
+        if (apps.length === 0) throw new Error("Parsed repo but found no valid packages.");
+
+        return {
+            name,
+            subtitle: "Imported Cydia Repository",
+            description,
+            iconURL,
+            headerImageURL: "",
+            website,
+            tintColor: "#3b82f6",
+            apps
+        };
+    };
+
     const processParsing = (data: any) => {
         try {
-            // 1. Unwrap "source" if it exists (common wrapper)
+            // 1. Unwrap "source" if it exists (common wrapper in TrollApps)
             const source = (data.source && typeof data.source === 'object' && !Array.isArray(data.source)) 
                 ? data.source 
                 : data;
@@ -49,7 +171,6 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onImport, onClose }) =
             // 4. Map Apps
             const rawApps = source.apps || source.packages || [];
             if (!Array.isArray(rawApps)) {
-                // Warning but allow empty repos
                 console.warn("No apps array found");
             }
 
@@ -79,7 +200,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onImport, onClose }) =
 
         } catch (err: any) {
             console.error("Import processing failed:", err);
-            setError(err.message || "Failed to parse repository data.");
+            throw new Error(err.message || "Failed to parse repository data.");
         }
     };
 
@@ -88,38 +209,42 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onImport, onClose }) =
         setError(null);
 
         try {
-            let jsonString = '';
-
             if (mode === 'url') {
                 const url = urlInput.trim();
                 if (!url) throw new Error("Please enter a URL.");
 
-                // Fix GitHub Blob URLs
-                let fetchUrl = url;
-                if (fetchUrl.includes('github.com') && fetchUrl.includes('/blob/')) {
-                    fetchUrl = fetchUrl.replace('/blob/', '/raw/');
+                // Check for Cydia/APT Repo characteristics (No .json extension)
+                const isJson = url.endsWith('.json');
+                
+                // If explicitly JSON or GitHub Blob (convert to raw)
+                if (isJson || url.includes('github.com')) {
+                     let fetchUrl = url;
+                    if (fetchUrl.includes('github.com') && fetchUrl.includes('/blob/')) {
+                        fetchUrl = fetchUrl.replace('/blob/', '/raw/');
+                    }
+
+                    const res = await fetch(fetchUrl, { cache: 'no-store' });
+                    if (!res.ok) throw new Error(`Network Error: ${res.status}`);
+                    const jsonString = await res.text();
+                    processParsing(JSON.parse(cleanString(jsonString)));
+                } else {
+                    // Attempt Cydia Import
+                    const cydiaRepo = await handleCydiaImport(url);
+                    setPreviewRepo(cydiaRepo);
                 }
 
-                const res = await fetch(fetchUrl, { cache: 'no-store' });
-                if (!res.ok) throw new Error(`Network Error: ${res.status}`);
-                jsonString = await res.text();
             } else {
-                jsonString = jsonInput;
+                const cleaned = cleanString(jsonInput);
+                if (!cleaned) throw new Error("Input is empty.");
+                let parsedData;
+                try {
+                    parsedData = JSON.parse(cleaned);
+                } catch (jsonErr: any) {
+                    const snippet = cleaned.substring(0, 50);
+                    throw new Error(`Invalid JSON syntax. Starts with: '${snippet}...'`);
+                }
+                processParsing(parsedData);
             }
-
-            // Clean and Parse
-            const cleaned = cleanString(jsonString);
-            if (!cleaned) throw new Error("Input is empty.");
-
-            let parsedData;
-            try {
-                parsedData = JSON.parse(cleaned);
-            } catch (jsonErr: any) {
-                const snippet = cleaned.substring(0, 50);
-                throw new Error(`Invalid JSON syntax. Starts with: '${snippet}...'`);
-            }
-
-            processParsing(parsedData);
 
         } catch (err: any) {
             setError(err.message);
@@ -170,16 +295,23 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onImport, onClose }) =
                             {mode === 'url' ? (
                                 <div className="space-y-4">
                                     <p className="text-sm text-slate-400">
-                                        Enter the direct URL to your <code>repo.json</code>.
+                                        Enter a direct URL to a <code>repo.json</code> <strong>OR</strong> a Cydia/APT Repository URL.
                                     </p>
                                     <input 
                                         type="url" 
                                         value={urlInput}
                                         onChange={(e) => setUrlInput(e.target.value)}
-                                        placeholder="https://gist.githubusercontent.com/..."
+                                        placeholder="https://repo.chariz.com/"
                                         className="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none font-mono"
                                         autoFocus
                                     />
+                                    <div className="text-[10px] text-slate-500 bg-slate-900/50 p-2 rounded border border-slate-800/50">
+                                        <p className="font-bold mb-1">Supported Formats:</p>
+                                        <ul className="list-disc list-inside space-y-0.5">
+                                            <li>Standard JSON (AltStore/TrollApps)</li>
+                                            <li>Cydia/Sileo Repos (Parses Packages.gz)</li>
+                                        </ul>
+                                    </div>
                                 </div>
                             ) : (
                                 <div className="space-y-4">
@@ -223,7 +355,11 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onImport, onClose }) =
                     <div className="p-6 bg-slate-900 space-y-6">
                         <div className="text-center">
                             <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-slate-800 mb-4 overflow-hidden shadow-lg border border-slate-700">
-                                <img src={previewRepo.iconURL} alt="" className="w-full h-full object-cover" onError={(e) => e.currentTarget.src = 'https://placehold.co/128x128/png'} />
+                                {previewRepo.iconURL ? (
+                                    <img src={previewRepo.iconURL} alt="" className="w-full h-full object-cover" onError={(e) => e.currentTarget.src = 'https://placehold.co/128x128/png'} />
+                                ) : (
+                                    <Package size={32} className="text-slate-600" />
+                                )}
                             </div>
                             <h3 className="text-xl font-bold text-white mb-1">{previewRepo.name}</h3>
                             <p className="text-slate-400 text-sm">{previewRepo.subtitle}</p>

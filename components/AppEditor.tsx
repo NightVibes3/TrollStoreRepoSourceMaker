@@ -5,17 +5,16 @@ import { Trash2, X, Image as ImageIcon } from 'lucide-react';
 
 interface AppEditorProps {
     app: AppItem;
-    index: number;
-    onUpdate: (index: number, updatedApp: AppItem) => void;
-    onDelete: (index: number) => void;
+    onUpdate: (id: string, updatedApp: AppItem) => void;
+    onDelete: (id: string) => void;
     onClose: () => void;
 }
 
-export const AppEditor: React.FC<AppEditorProps> = ({ app, index, onUpdate, onDelete, onClose }) => {
+export const AppEditor: React.FC<AppEditorProps> = ({ app, onUpdate, onDelete, onClose }) => {
     const [deleteConfirm, setDeleteConfirm] = useState(false);
 
     const handleChange = (field: keyof AppItem, value: any) => {
-        onUpdate(index, { ...app, [field]: value });
+        onUpdate(app.id, { ...app, [field]: value });
     };
 
     const handleScreenshotChange = (sIndex: number, value: string) => {
@@ -35,7 +34,7 @@ export const AppEditor: React.FC<AppEditorProps> = ({ app, index, onUpdate, onDe
 
     const handleDelete = () => {
         if (deleteConfirm) {
-            onDelete(index);
+            onDelete(app.id);
         } else {
             setDeleteConfirm(true);
             setTimeout(() => setDeleteConfirm(false), 3000); // Reset confirm after 3s
@@ -74,13 +73,17 @@ export const AppEditor: React.FC<AppEditorProps> = ({ app, index, onUpdate, onDe
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <InputGroup label="App Name" value={app.name} onChange={(v) => handleChange('name', v)} />
-                <InputGroup label="Bundle ID" value={app.bundleIdentifier} onChange={(v) => handleChange('bundleIdentifier', v)} placeholder="com.example.app" />
+                <InputGroup label="Category" value={app.category || "Utilities"} onChange={(v) => handleChange('category', v)} placeholder="Games, Tools, etc." />
                 
+                <InputGroup label="Bundle ID" value={app.bundleIdentifier} onChange={(v) => handleChange('bundleIdentifier', v)} placeholder="com.example.app" />
+                <InputGroup label="Developer" value={app.developerName} onChange={(v) => handleChange('developerName', v)} />
+
                 <InputGroup label="Version" value={app.version} onChange={(v) => handleChange('version', v)} className="md:col-span-1" />
                 <InputGroup label="Version Date" type="date" value={app.versionDate} onChange={(v) => handleChange('versionDate', v)} className="md:col-span-1" />
 
-                <InputGroup label="Developer" value={app.developerName} onChange={(v) => handleChange('developerName', v)} />
-                <InputGroup label="Size (Bytes)" type="number" value={app.size || 0} onChange={(v) => handleChange('size', parseInt(v) || 0)} />
+                <div className="md:col-span-2">
+                    <InputGroup label="Size (Bytes)" type="number" value={app.size || 0} onChange={(v) => handleChange('size', parseInt(v) || 0)} />
+                </div>
 
                 <div className="md:col-span-2">
                     <InputGroup 

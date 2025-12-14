@@ -66,6 +66,7 @@ export const AIImporter: React.FC<AIImporterProps> = ({ onImport, onClose }) => 
                     "localizedDescription": "string",
                     "iconURL": "string", // High quality direct image URL
                     "tintColor": "#hex",
+                    "category": "string", // e.g. "Games", "Utilities", "Social", "Emulators"
                     "size": 0
                 }
             `;
@@ -145,6 +146,7 @@ export const AIImporter: React.FC<AIImporterProps> = ({ onImport, onClose }) => 
                     "localizedDescription": "Imported app.",
                     "iconURL": "", 
                     "tintColor": "#3b82f6",
+                    "category": "Utilities",
                     "size": 0
                 }
             `;
